@@ -1,0 +1,439 @@
+import streamlit as st
+import pandas as pd
+import joblib
+import os
+from datetime import datetime
+
+# --- ENHANCEMENT: Set Page Config (Icon, Title, Layout) ---
+st.set_page_config(
+    page_title="Traffic Congestion Predictor",
+    page_icon="🚦", 
+    layout="wide"
+)
+
+# ---------------------------------------------------------
+# CUSTOM CSS - COOL, DARK MODE, CYBERPUNK ACCENTS (UNCHANGED)
+# ---------------------------------------------------------
+st.markdown("""
+    <style>
+    .stApp {
+        background: #1f2937;
+        color: #f3f4f6;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    
+    .css-1d391kg { 
+        background-color: #111827 !important;
+        border-right: 1px solid #374151;
+        box-shadow: 2px 0 10px rgba(0, 0, 0, 0.2);
+        color: #f3f4f6;
+    }
+
+    label {
+        font-weight: 600;
+        color: #d1d5db;
+    }
+
+    .main-header {
+        text-align: center;
+        padding: 3rem 0 1rem 0;
+        margin-bottom: 2rem;
+        background: #111827;
+        border-bottom: 4px solid #06b6d4;
+    }
+    
+    .main-header h1 {
+        color: #f3f4f6;
+        font-size: 3rem; 
+        margin: 0;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-shadow: 0 0 5px #06b6d4;
+    }
+    
+    .input-section {
+        background: #2d3748;
+        padding: 2.5rem;
+        border-radius: 16px;
+        margin-bottom: 2rem;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+        transition: all 0.3s ease;
+        border: 1px solid #4b5563;
+    }
+    
+    .input-section:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 12px 25px rgba(0, 0, 0, 0.4);
+    }
+    
+    .section-title {
+        color: #06b6d4;
+        font-size: 1.8rem;
+        font-weight: 700;
+        margin-bottom: 2rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 3px solid #06b6d4;
+    }
+    
+    .stButton>button {
+        width: 100%;
+        background: #06b6d4;
+        color: #1f2937;
+        font-size: 1.2rem;
+        font-weight: 800;
+        padding: 1.2rem 1.5rem;
+        border-radius: 10px;
+        border: none;
+        box-shadow: 0 6px 15px rgba(6, 182, 212, 0.5);
+        transition: all 0.2s ease-in-out;
+    }
+    
+    .stButton>button:hover {
+        background: #0ea5e9;
+        box-shadow: 0 8px 20px rgba(14, 165, 233, 0.6);
+        transform: translateY(-2px);
+    }
+    
+    div[data-testid="stAlert"] {
+        border-radius: 8px;
+        border-left: 6px solid;
+    }
+
+    div[data-testid="stAlert"] * {
+        color: inherit !important;
+    }
+    
+    .prediction-value {
+        background: #111827;
+        color: white;
+        padding: 2.5rem;
+        border-radius: 12px;
+        text-align: center;
+        margin-top: 1rem;
+        box-shadow: 0 4px 15px rgba(6, 182, 212, 0.3);
+        border: 2px solid #06b6d4;
+    }
+    
+    .prediction-value div:first-child {
+        font-size: 4rem !important;
+        font-weight: 900 !important;
+    }
+
+    div[data-baseweb="input"], div[data-baseweb="select"] {
+        background-color: #374151;
+        border-radius: 6px;
+        color: #f3f4f6;
+    }
+
+    input, textarea, div[data-baseweb="select"] span {
+        color: #f3f4f6 !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# FIX 1: DYNAMICALLY LOAD CATEGORICAL OPTIONS
+# ---------------------------------------------------------
+
+# Get the directory where this script is located
+script_dir = os.path.dirname(os.path.abspath(__file__))
+model_path = os.path.join(script_dir, "traffic_predictor_model.pkl")
+data_path = os.path.join(script_dir, "Banglore_traffic_Dataset.csv")
+
+@st.cache_data
+def load_data_for_categories(path):
+    """Loads the dataset and returns unique values for categorical features."""
+    try:
+        df = pd.read_csv(path)
+        return {
+            'AREA_OPTIONS': sorted(df['Area Name'].unique().tolist()),
+            'ROAD_OPTIONS': sorted(df['Road/Intersection Name'].unique().tolist()),
+            'WEATHER_OPTIONS': sorted(df['Weather Conditions'].unique().tolist()),
+            'ROADWORK_OPTIONS': sorted(df['Roadwork and Construction Activity'].unique().tolist())
+        }
+    except FileNotFoundError:
+        st.error(f"Dataset '{os.path.basename(path)}' not found. Cannot populate input lists.")
+        return None
+    except Exception as e:
+        st.error(f"Error loading data for categories: {e}")
+        return None
+
+category_data = load_data_for_categories(data_path)
+
+if category_data is None:
+    st.stop()
+
+# FIX 2: Load Model Robustly and get expected column names
+@st.cache_resource
+def load_predictor_model(path):
+    """Loads the pre-trained model pipeline and extracts feature names."""
+    try:
+        model = joblib.load(path)
+        if hasattr(model, 'feature_names_in_'):
+            return model, model.feature_names_in_.tolist()
+        else:
+            st.error("Model does not have feature_names_in_. Prediction may fail.")
+            return model, None
+    except FileNotFoundError:
+        st.error(f"Model file '{os.path.basename(path)}' not found. Prediction disabled.")
+        return None, None
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None, None
+
+model_pipeline, expected_cols = load_predictor_model(model_path)
+
+
+# ---------------------------------------------------------
+# SIDEBAR (Updated to use dynamic lists)
+# ---------------------------------------------------------
+with st.sidebar:
+    st.markdown("## ⚙️ **System Info**")
+    st.markdown("""
+    This application predicts traffic congestion levels 
+    using machine learning based on real-time and historical data.
+    
+    - **Engine**: Random Forest Regressor
+    - **Data Features**: Location, Time, Weather, and Indicators
+    """)
+    
+    st.markdown("---")
+    
+    st.markdown("## 📈 **Congestion Scale**")
+    # Using st.table for a cleaner display of levels
+    st.table(pd.DataFrame({
+        'Score': ['0-30', '30-60', '60-100'],
+        'Level': ['Low Congestion', 'Moderate Congestion', 'High Congestion']
+    }).style.set_properties(**{'background-color': '#1f2937', 'color': '#f3f4f6'}).hide(axis='index'))
+
+
+# ---------------------------------------------------------
+# HEADER SECTION
+# ---------------------------------------------------------
+st.markdown("""
+    <div class="main-header">
+        <h1>⚡ Traffic Congestion Predictor</h1>
+    </div>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# USER INPUT FIELDS (Updated to use dynamic lists)
+# ---------------------------------------------------------
+
+# Use a main container for all inputs
+with st.container():
+
+    # Location & Time Section
+    st.markdown('<div class="input-section">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📍 Location & ⏱️ Time</div>', unsafe_allow_html=True)
+    
+    loc_col1, loc_col2 = st.columns(2)
+    
+    with loc_col1:
+        # Using dynamic lists
+        area_name = st.selectbox("Area Name", options=category_data['AREA_OPTIONS'], index=0)
+        road_name = st.selectbox("Road/Intersection Name", options=category_data['ROAD_OPTIONS'], index=0)
+    
+    with loc_col2:
+        date_input = st.date_input("Date", value=datetime.now().date())
+        time_input = st.time_input("Time", value=datetime.now().time().replace(second=0, microsecond=0), step=1800)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Weather & Road Conditions Section
+    st.markdown('<div class="input-section">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">☁️ Weather & 🚧 Road Conditions</div>', unsafe_allow_html=True)
+    
+    weather_col1, weather_col2 = st.columns(2)
+    
+    with weather_col1:
+        # Using dynamic lists
+        weather = st.selectbox("Weather Conditions", options=category_data['WEATHER_OPTIONS'], index=0)
+    
+    with weather_col2:
+        # Using dynamic lists
+        roadwork = st.selectbox("Roadwork and Construction Activity", options=category_data['ROADWORK_OPTIONS'], index=0)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Traffic Indicators Section
+    st.markdown('<div class="input-section">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">🚗 Traffic Flow Metrics</div>', unsafe_allow_html=True)
+    
+    indicator_col_left, indicator_col_right = st.columns(2)
+    
+    with indicator_col_left:
+        st.subheader("Volume & Speed")
+        traffic_volume = st.number_input("Traffic Volume", value=1000, min_value=0, step=50)
+        avg_speed = st.number_input("Average Speed (km/h)", value=50.0, min_value=0.0, step=5.0, format="%.1f")
+        
+        st.subheader("Capacity & Incidents")
+        incident_reports = st.number_input("Incident Reports", value=0, min_value=0, step=1)
+        road_capacity = st.number_input("Road Capacity Utilization (%)", value=75.0, min_value=0.0, max_value=100.0, step=5.0, format="%.1f")
+    
+    with indicator_col_right:
+        st.subheader("Efficiency & Compliance")
+        travel_time_index = st.number_input("Travel Time Index", value=1.2, min_value=0.0, step=0.1, format="%.2f")
+        signal_compliance = st.number_input("Traffic Signal Compliance (%)", value=85.0, min_value=0.0, max_value=100.0, step=5.0, format="%.1f")
+
+        st.subheader("Other Factors")
+        env_impact = st.number_input("Environmental Impact (Scale 0-100)", value=50.0, min_value=0.0, step=5.0, format="%.1f")
+        public_transport = st.number_input("Public Transport Usage (%)", value=30.0, min_value=0.0, max_value=100.0, step=5.0, format="%.1f")
+
+    # A separate column for pedestrian/parking
+    final_col1, final_col2 = st.columns(2)
+    with final_col1:
+        parking_usage = st.number_input("Parking Usage (%)", value=60.0, min_value=0.0, max_value=100.0, step=5.0, format="%.1f")
+    with final_col2:
+        pedestrian_count = st.number_input("Pedestrian and Cyclist Count", value=100, min_value=0, step=10)
+
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------
+# PREDICT BUTTON
+# ---------------------------------------------------------
+st.markdown("---")
+col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+
+with col_btn2:
+    predict_button = st.button("🔮 **Calculate Future Traffic**", use_container_width=True, type="primary")
+
+if predict_button:
+
+    if model_pipeline is None or expected_cols is None:
+        st.error("Cannot proceed with prediction. The model file or its feature list could not be loaded.")
+        st.stop()
+
+    # Build datetime
+    dt = datetime.combine(date_input, time_input)
+
+    # ---------------------------------------------------------
+    # BUILD INPUT ROW (MATCHING TRAINING FORMAT)
+    # ---------------------------------------------------------
+    input_dict = {
+        "Area Name": str(area_name),
+        "Road/Intersection Name": str(road_name),
+        "Traffic Volume": float(traffic_volume),
+        "Average Speed": float(avg_speed),
+        "Travel Time Index": float(travel_time_index),
+        "Road Capacity Utilization": float(road_capacity),
+        "Incident Reports": float(incident_reports),
+        "Environmental Impact": float(env_impact),
+        "Public Transport Usage": float(public_transport),
+        "Traffic Signal Compliance": float(signal_compliance),
+        "Parking Usage": float(parking_usage),
+        "Pedestrian and Cyclist Count": float(pedestrian_count),
+        "Weather Conditions": str(weather),
+        "Roadwork and Construction Activity": str(roadwork),
+        # Date/Time features
+        "Year": int(dt.year),
+        "Month": int(dt.month),
+        "DayOfWeek": int(dt.weekday()),
+        "DayOfYear": int(dt.timetuple().tm_yday),
+        "Day": int(dt.day),
+        "Hour": int(dt.hour)
+    }
+
+    # Create DataFrame with all input values
+    df = pd.DataFrame([input_dict])
+
+    # ---------------------------------------------------------
+    # ALIGN COLUMNS EXACTLY AS TRAINED (Crucial for Pipeline)
+    # ---------------------------------------------------------
+    
+    # Fill missing OHE columns with 0, or ensure all columns are present.
+    # The ColumnTransformer handles the OHE, so the input DataFrame only needs
+    # the original 20 columns, in any order, with correct data types.
+    # We use the list of original column names from the model's feature_names_in_ attribute.
+    
+    # We must ensure the input columns exactly match the set of columns the model was trained on.
+    # The ColumnTransformer relies on the column names being present in the input dataframe.
+    
+    # We can skip the complex reindexing/dummy column creation because the ColumnTransformer 
+    # inside the model_pipeline handles feature selection and OHE robustly, 
+    # provided the original column names are present with correct data types.
+    
+    # The simple fix is to ensure the DataFrame has all 20 columns the model expects.
+    # The `input_dict` is structured to match the non-OHE column names.
+    
+    # Final check on column list integrity
+    if set(input_dict.keys()) != set(expected_cols):
+        missing_in_input = set(expected_cols) - set(input_dict.keys())
+        st.error(f"Internal Error: Input dictionary is missing expected columns: {missing_in_input}")
+        st.stop()
+    
+    df = df[expected_cols]
+
+    # FIX 3: Convert categorical columns to string type (prevents subtle Pipeline errors)
+    cat_cols = ['Area Name', 'Road/Intersection Name', 'Weather Conditions', 'Roadwork and Construction Activity']
+    for col in cat_cols:
+        df[col] = df[col].astype(str).str.strip()
+
+
+    # ---------------------------------------------------------
+    # PERFORM PREDICTION
+    # ---------------------------------------------------------
+    try:
+        with st.spinner('Accessing urban data feed and simulating traffic flow...'):
+            prediction = model_pipeline.predict(df)[0]
+        
+        prediction = max(0, min(100, prediction))
+        
+        # Determine congestion level and colors
+        if prediction < 30:
+            level = "Low"
+            color = "#10b981" # Green
+            emoji = "🟢"
+            advice = "Traffic is flowing optimally. Enjoy smooth travel!"
+        elif prediction < 60:
+            level = "Moderate"
+            color = "#f59e0b" # Amber/Yellow
+            emoji = "🟠"
+            advice = "Expect noticeable congestion. Minor delays are likely; plan accordingly."
+        else:
+            level = "High"
+            color = "#ef4444" # Red
+            emoji = "🔴"
+            advice = "Severe congestion detected! Significant delays expected. Consider an alternate route or transit option."
+        
+        # Display prediction
+        st.markdown("---")
+        st.markdown(f"## {emoji} **Predicted Congestion Level: {level}**")
+        
+        # --- Prediction Visualization (Original HTML/CSS maintained) ---
+        col_pred1, col_pred2 = st.columns([1, 2])
+        
+        with col_pred1:
+            st.markdown(f"""
+                <div class="prediction-value" style="color: {color};">
+                    <div>{prediction:.1f}</div>
+                    <div style="font-size: 1.1rem; font-weight: 600; color: #d1d5db;">Congestion Score (0-100)</div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown(f"<p style='color: #d1d5db; margin-top: 1.5rem; font-weight: 600;'>Traffic Pressure Gauge:</p>", unsafe_allow_html=True)
+            st.progress(prediction / 100.0) 
+            
+        with col_pred2:
+            st.markdown(f"""
+            <div style="background: #374151; padding: 20px; border-radius: 10px; border: 1px solid {color}; margin-top: 1rem;">
+                <h3 style="color: {color}; margin-top: 0;">Traffic Analysis Summary:</h3>
+                <p style="font-size: 1.1em; color: #f3f4f6;">
+                The model predicts a congestion score of **<span style='color: {color}; font-weight: bold;'>{prediction:.1f} ({level})</span>** for the selected time and location.
+                </p>
+                <p style="font-size: 1.1em; color: #d1d5db; border-top: 1px dashed #4b5563; padding-top: 10px;">
+                **Recommendation:** {advice}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            with st.expander("Detailed Input Parameters"):
+                # Display only the features used for prediction, not the intermediate OHE columns
+                st.dataframe(df.iloc[0].to_frame().T.astype(str)) 
+
+    except Exception as e:
+        st.error(f"Prediction error: {e}")
+        with st.expander("Error Details"):
+            st.exception(e)
